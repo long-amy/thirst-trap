@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Background -->
+  <rect width="512" height="512" rx="100" fill="#1a2e1a"/>
+
+  <!-- Pipe arm: curves from top-right down to shower head -->
+  <path d="M 370 75 Q 370 165 270 170" stroke="#4caf50" stroke-width="30" stroke-linecap="round" fill="none"/>
+
+  <!-- Shower head angled ~-30deg, centered around (210, 195) -->
+  <g transform="translate(210,195) rotate(-30)">
+    <rect x="-100" y="-27" width="200" height="54" rx="27" fill="#4caf50"/>
+    <circle cx="-60" cy="0" r="9" fill="#1a2e1a"/>
+    <circle cx="-25" cy="0" r="9" fill="#1a2e1a"/>
+    <circle cx="10"  cy="0" r="9" fill="#1a2e1a"/>
+    <circle cx="45"  cy="0" r="9" fill="#1a2e1a"/>
+    <circle cx="78"  cy="0" r="9" fill="#1a2e1a"/>
+  </g>
+
+  <!-- Water drops (teardrop ellipses, slightly elongated) -->
+  <ellipse cx="170" cy="318" rx="10" ry="14" fill="#5ba3be"/>
+  <ellipse cx="205" cy="340" rx="10" ry="14" fill="#5ba3be"/>
+  <ellipse cx="240" cy="318" rx="10" ry="14" fill="#5ba3be"/>
+  <ellipse cx="275" cy="340" rx="10" ry="14" fill="#5ba3be"/>
+  <ellipse cx="310" cy="318" rx="10" ry="14" fill="#5ba3be"/>
+
+  <ellipse cx="185" cy="396" rx="9" ry="13" fill="#5ba3be" opacity="0.7"/>
+  <ellipse cx="222" cy="418" rx="9" ry="13" fill="#5ba3be" opacity="0.7"/>
+  <ellipse cx="258" cy="396" rx="9" ry="13" fill="#5ba3be" opacity="0.7"/>
+  <ellipse cx="294" cy="415" rx="9" ry="13" fill="#5ba3be" opacity="0.7"/>
+
+  <ellipse cx="205" cy="462" rx="8" ry="11" fill="#5ba3be" opacity="0.4"/>
+  <ellipse cx="245" cy="475" rx="8" ry="11" fill="#5ba3be" opacity="0.4"/>
+  <ellipse cx="278" cy="458" rx="8" ry="11" fill="#5ba3be" opacity="0.4"/>
+</svg>
