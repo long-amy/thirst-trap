@@ -111,7 +111,6 @@ export default function AddPlantModal({ user, household, onClose }) {
             <span style={{ fontSize: '13px' }}>Tap to add a photo</span>
           </div>
         )}
-        {/* no capture attribute here so desktop gets file picker and mobile gets camera/library choice */}
         <input
           ref={fileInputRef}
           type="file"

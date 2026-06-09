@@ -44,9 +44,15 @@ export default function HealthTab({ plant, user, household }) {
     setPendingEntry({ id: tempId, pending: true, note, photoPreview });
 
     try {
-      // Convert image to base64
+      // Convert image to base64 (chunked to handle large phone photos)
       const arrayBuffer = await photoFile.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      const chunkSize = 8192;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      const base64 = btoa(binary);
 
       // Call Claude
       const analysis = await analyzePlantHealth(base64, photoFile.type, note);
@@ -74,7 +80,7 @@ export default function HealthTab({ plant, user, household }) {
       setNote('');
     } catch (err) {
       console.error(err);
-      setError('Analysis failed. Check your API key and try again.');
+      setError(`Analysis failed: ${err.message || 'Unknown error'}`);
       setPendingEntry(null);
     }
 
@@ -128,7 +134,7 @@ export default function HealthTab({ plant, user, household }) {
               <p style={{ margin: 0, fontSize: '14px' }}>Add a photo</p>
             </div>
           )}
-          <input ref={fileInputRef} type="file" accept="image/*" capture="environment" onChange={handlePhotoSelect} style={{ display: 'none' }} />
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoSelect} style={{ display: 'none' }} />
 
           <textarea
             value={note}

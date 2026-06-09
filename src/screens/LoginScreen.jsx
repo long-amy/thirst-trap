@@ -1,5 +1,6 @@
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
+import mascotImg from '../assets/mascot.png';
 
 export default function LoginScreen() {
   async function handleGoogleSignIn() {

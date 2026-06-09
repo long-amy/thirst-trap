@@ -5,6 +5,7 @@ import { db, auth } from '../lib/firebase';
 import AddPlantModal from '../components/AddPlantModal';
 import HouseholdModal from '../components/HouseholdModal';
 import ThirstQuencher from '../components/ThirstQuencher';
+import mascotImg from '../assets/mascot.png';
 
 const SORT_OPTIONS = [
   { key: 'thirstiest', label: '💧 Thirstiest' },

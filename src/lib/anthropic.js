@@ -26,7 +26,7 @@ export async function analyzePlantHealth(imageBase64, mimeType, userNote) {
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system:
-        'You are a plant health expert. The user will share a photo of their plant and optionally describe what they\'re seeing. Provide a concise diagnosis and actionable care advice. Be specific and practical.',
+        'You are a plant health expert. The user will share a photo of their plant and optionally describe what they\'re seeing. Respond in 2-3 short plain text sentences — no markdown, no bullet points, no headers. Give a quick diagnosis and one or two specific actions to take.',
       messages: [{ role: 'user', content }],
     }),
   });
@@ -37,5 +37,14 @@ export async function analyzePlantHealth(imageBase64, mimeType, userNote) {
   }
 
   const data = await response.json();
-  return data.content[0].text;
+  const raw = data.content[0].text;
+  // Strip markdown formatting so it renders as clean plain text
+  return raw
+    .replace(/#{1,6}\s+/g, '')           // ## headings
+    .replace(/\*\*(.*?)\*\*/g, '$1')     // **bold**
+    .replace(/\*(.*?)\*/g, '$1')         // *italic*
+    .replace(/`([^`]*)`/g, '$1')         // `code`
+    .replace(/^[-*]\s+/gm, '')           // - bullet points
+    .replace(/\n{3,}/g, '\n\n')          // collapse extra blank lines
+    .trim();
 }
