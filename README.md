@@ -12,6 +12,21 @@ Thirst Trap was built as a personal project to solve a real problem: keeping tra
 
 ---
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="screenshots/home.png" width="200"/><br/><sub>Home — plant grid</sub></td>
+    <td align="center"><img src="screenshots/watering.png" width="200"/><br/><sub>Watering history</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/health.png" width="200"/><br/><sub>AI health check</sub></td>
+    <td align="center"><img src="screenshots/thirst-quencher.png" width="200"/><br/><sub>Thirst Quencher mode</sub></td>
+  </tr>
+</table>
+
+---
+
 ## Features
 
 - **Google Sign-In** with household creation and invite code joining
