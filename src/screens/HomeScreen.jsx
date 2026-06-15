@@ -1,11 +1,13 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, writeBatch, doc } from 'firebase/firestore';
+import { useState, useEffect, useRef } from 'react';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, writeBatch, doc, deleteField, Timestamp } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth } from '../lib/firebase';
 import AddPlantModal from '../components/AddPlantModal';
 import HouseholdModal from '../components/HouseholdModal';
 import ThirstQuencher from '../components/ThirstQuencher';
-import mascotImg from '../assets/mascot.png';
+import NotificationSettings from '../components/NotificationSettings';
+
+const OLIVE = '#8eb85a';
 
 const SORT_OPTIONS = [
   { key: 'thirstiest', label: '💧 Thirstiest' },
@@ -18,6 +20,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [lastWatered, setLastWatered] = useState({});
+  const [lastChecked, setLastChecked] = useState({});
   const [sort, setSort] = useState('thirstiest');
   const [locationFilter, setLocationFilter] = useState(null);
   const [showHousehold, setShowHousehold] = useState(false);
@@ -25,6 +28,10 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [batching, setBatching] = useState(false);
+  const [showNotifSettings, setShowNotifSettings] = useState(false);
+  const [showBatchDatePicker, setShowBatchDatePicker] = useState(false);
+  const [pendingBatchType, setPendingBatchType] = useState(null);
+  const [batchDate, setBatchDate] = useState('');
 
   useEffect(() => {
     if (!household) return;
@@ -50,16 +57,43 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
     });
   }, [household]);
 
-  function getDaysSince(ts) {
+  useEffect(() => {
+    if (!household) return;
+    const q = query(collection(db, 'checkLogs'), where('householdId', '==', household.id));
+    return onSnapshot(q, snap => {
+      const map = {};
+      snap.docs.forEach(d => {
+        const { plantId, checkedAt } = d.data();
+        const seconds = checkedAt?.seconds ?? 0;
+        if (!map[plantId] || seconds > (map[plantId]?.seconds ?? 0)) map[plantId] = checkedAt;
+      });
+      setLastChecked(map);
+    });
+  }, [household]);
+
+  // Midnight-normalized days since a timestamp (fixes off-by-one)
+  function daysSinceTs(ts) {
     if (!ts) return null;
     const ms = ts.toDate ? ts.toDate().getTime() : ts.seconds * 1000;
-    return Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24));
+    const d = new Date(ms); d.setHours(0, 0, 0, 0);
+    const t = new Date(); t.setHours(0, 0, 0, 0);
+    return Math.round((t - d) / (1000 * 60 * 60 * 24));
   }
 
   function thirstScore(plant) {
-    const days = getDaysSince(lastWatered[plant.id]);
     const interval = plant.waterIntervalDays;
     if (!interval) return -1;
+    // If a check pushed the schedule, sort based on the override
+    if (plant.nextWateringOverride) {
+      const ms = plant.nextWateringOverride.toDate
+        ? plant.nextWateringOverride.toDate().getTime()
+        : plant.nextWateringOverride.seconds * 1000;
+      const d = new Date(ms); d.setHours(0, 0, 0, 0);
+      const t = new Date(); t.setHours(0, 0, 0, 0);
+      const daysUntil = Math.round((d - t) / (1000 * 60 * 60 * 24));
+      return -daysUntil / interval;
+    }
+    const days = daysSinceTs(lastWatered[plant.id]);
     if (days === null) return interval + 1000;
     return days / interval;
   }
@@ -95,20 +129,38 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
     setSelected(new Set());
   }
 
-  async function batchLog(type) {
-    if (!selected.size || batching) return;
+  function initiateBatch(type) {
+    if (!selected.size) return;
+    setPendingBatchType(type);
+    setBatchDate(new Date().toISOString().split('T')[0]);
+    setShowBatchDatePicker(true);
+  }
+
+  async function confirmBatchLog() {
+    if (!pendingBatchType || !batchDate || batching) return;
     setBatching(true);
-    const batch = writeBatch(db);
+    const [year, month, day] = batchDate.split('-').map(Number);
+    const loggedAt = Timestamp.fromDate(new Date(year, month - 1, day, 12, 0, 0));
     const displayName = user.displayName?.split(' ')[0] || 'Someone';
+    const batch = writeBatch(db);
+
     selected.forEach(plantId => {
-      const logRef = doc(collection(db, type === 'water' ? 'wateringLogs' : 'fertilizerLogs'));
-      const entry = type === 'water'
-        ? { plantId, householdId: household.id, wateredAt: serverTimestamp(), loggedBy: { userId: user.uid, displayName } }
-        : { plantId, householdId: household.id, fertilizedAt: serverTimestamp(), loggedBy: { userId: user.uid, displayName } };
-      batch.set(logRef, entry);
+      if (pendingBatchType === 'water') {
+        const logRef = doc(collection(db, 'wateringLogs'));
+        batch.set(logRef, { plantId, householdId: household.id, wateredAt: loggedAt, loggedBy: { userId: user.uid, displayName } });
+        batch.update(doc(db, 'plants', plantId), { nextWateringOverride: deleteField() });
+      } else if (pendingBatchType === 'check') {
+        const logRef = doc(collection(db, 'checkLogs'));
+        batch.set(logRef, { plantId, householdId: household.id, checkedAt: loggedAt, loggedBy: { userId: user.uid, displayName } });
+      } else if (pendingBatchType === 'fertilize') {
+        const logRef = doc(collection(db, 'fertilizerLogs'));
+        batch.set(logRef, { plantId, householdId: household.id, fertilizedAt: loggedAt, loggedBy: { userId: user.uid, displayName } });
+      }
     });
+
     await batch.commit();
     setBatching(false);
+    setShowBatchDatePicker(false);
     exitMultiSelect();
   }
 
@@ -134,6 +186,15 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
               <span style={{ fontSize: '13px', fontWeight: '700', color: '#fff', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {household.name || household.id}
               </span>
+            </button>
+            <button
+              onClick={() => setShowNotifSettings(true)}
+              style={{
+                background: '#1e331e', border: '1px solid #2d4a2d', borderRadius: '10px',
+                padding: '6px 10px', cursor: 'pointer', fontSize: '16px', color: '#a8c5a0', lineHeight: 1,
+              }}
+            >
+              🔔
             </button>
             <button
               onClick={() => signOut(auth)}
@@ -241,6 +302,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
             key={plant.id}
             plant={plant}
             lastWateredTs={lastWatered[plant.id]}
+            lastCheckedTs={lastChecked[plant.id]}
             multiSelect={multiSelect}
             isSelected={selected.has(plant.id)}
             onLongPress={() => enterMultiSelect(plant.id)}
@@ -249,7 +311,6 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
         ))}
       </div>
 
-      {/* FABs — hidden in multiselect */}
       {!multiSelect && (
         <>
           <button
@@ -280,38 +341,93 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
         </>
       )}
 
-      {/* Multiselect action bar */}
       {multiSelect && (
         <div style={{
           position: 'fixed', bottom: 0, left: 0, right: 0,
           background: '#1a2e1a', borderTop: '1px solid #2d4a2d',
-          padding: '16px', display: 'flex', gap: '12px', zIndex: 30,
+          padding: '16px', display: 'flex', gap: '8px', zIndex: 30,
         }}>
           <button
-            onClick={() => batchLog('water')}
+            onClick={() => initiateBatch('water')}
             disabled={!selected.size || batching}
             style={{
               flex: 1, background: '#5ba3be', color: '#fff', border: 'none',
-              borderRadius: '12px', padding: '14px', fontSize: '16px', fontWeight: '700',
+              borderRadius: '12px', padding: '14px 6px', fontSize: '14px', fontWeight: '700',
               cursor: 'pointer', opacity: !selected.size ? 0.5 : 1,
             }}
           >
-            💧 Water all
+            💧 Water
           </button>
           <button
-            onClick={() => batchLog('fertilize')}
+            onClick={() => initiateBatch('check')}
+            disabled={!selected.size || batching}
+            style={{
+              flex: 1, background: 'transparent', color: OLIVE,
+              border: `2px solid ${OLIVE}`, borderRadius: '12px', padding: '14px 6px',
+              fontSize: '14px', fontWeight: '700', cursor: 'pointer', opacity: !selected.size ? 0.5 : 1,
+            }}
+          >
+            ✓ Check
+          </button>
+          <button
+            onClick={() => initiateBatch('fertilize')}
             disabled={!selected.size || batching}
             style={{
               flex: 1, background: '#c06080', color: '#fff', border: 'none',
-              borderRadius: '12px', padding: '14px', fontSize: '16px', fontWeight: '700',
+              borderRadius: '12px', padding: '14px 6px', fontSize: '14px', fontWeight: '700',
               cursor: 'pointer', opacity: !selected.size ? 0.5 : 1,
             }}
           >
-            🌿 Fertilize all
+            🌿 Fert.
           </button>
         </div>
       )}
 
+      {showBatchDatePicker && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#1a2e1a', borderRadius: '16px', padding: '24px', width: '300px', margin: '20px', border: '1px solid #2d4a2d' }}>
+            <h3 style={{ color: '#fff', margin: '0 0 6px', fontSize: '18px' }}>
+              {pendingBatchType === 'water' ? '💧' : pendingBatchType === 'check' ? '✓' : '🌿'} When?
+            </h3>
+            <p style={{ color: '#a8c5a0', fontSize: '13px', margin: '0 0 16px' }}>
+              {selected.size} plant{selected.size !== 1 ? 's' : ''} selected
+            </p>
+            <input
+              type="date"
+              value={batchDate}
+              max={new Date().toISOString().split('T')[0]}
+              onChange={e => setBatchDate(e.target.value)}
+              style={{
+                width: '100%', background: '#0f1f0f', border: '1px solid #2d4a2d',
+                borderRadius: '10px', padding: '12px', color: '#fff', fontSize: '16px',
+                boxSizing: 'border-box', marginBottom: '16px', outline: 'none',
+              }}
+            />
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={confirmBatchLog}
+                disabled={!batchDate || batching}
+                style={{
+                  flex: 1,
+                  background: pendingBatchType === 'water' ? '#5ba3be' : pendingBatchType === 'check' ? OLIVE : '#c06080',
+                  color: '#fff', border: 'none', borderRadius: '10px', padding: '12px',
+                  fontWeight: '700', cursor: 'pointer', fontSize: '15px',
+                }}
+              >
+                {batching ? 'Saving...' : 'Confirm'}
+              </button>
+              <button
+                onClick={() => setShowBatchDatePicker(false)}
+                style={{ flex: 1, background: 'transparent', color: '#a8c5a0', border: '1px solid #2d4a2d', borderRadius: '10px', padding: '12px', cursor: 'pointer', fontSize: '15px' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNotifSettings && <NotificationSettings user={user} onClose={() => setShowNotifSettings(false)} />}
       {showAdd && <AddPlantModal user={user} household={household} onClose={() => setShowAdd(false)} />}
       {showHousehold && <HouseholdModal household={household} onClose={() => setShowHousehold(false)} />}
       {showQuencher && (
@@ -327,33 +443,47 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
   );
 }
 
-function PlantTile({ plant, lastWateredTs, multiSelect, isSelected, onLongPress, onClick }) {
+function PlantTile({ plant, lastWateredTs, lastCheckedTs, multiSelect, isSelected, onLongPress, onClick }) {
   const pressTimer = useRef(null);
 
-  function startPress() {
-    pressTimer.current = setTimeout(() => onLongPress(), 600);
+  function startPress() { pressTimer.current = setTimeout(() => onLongPress(), 600); }
+  function cancelPress() { if (pressTimer.current) { clearTimeout(pressTimer.current); pressTimer.current = null; } }
+
+  const wasCheckedMoreRecently = lastCheckedTs &&
+    (!lastWateredTs || (lastCheckedTs.seconds ?? 0) > (lastWateredTs.seconds ?? 0));
+
+  // Midnight-normalized days since a timestamp
+  function daysSinceTs(ts) {
+    if (!ts) return null;
+    const ms = ts.toDate ? ts.toDate().getTime() : ts.seconds * 1000;
+    const d = new Date(ms); d.setHours(0, 0, 0, 0);
+    const t = new Date(); t.setHours(0, 0, 0, 0);
+    return Math.round((t - d) / (1000 * 60 * 60 * 24));
   }
 
-  function cancelPress() {
-    if (pressTimer.current) { clearTimeout(pressTimer.current); pressTimer.current = null; }
-  }
-
-  function getDaysSince() {
-    if (!lastWateredTs) return null;
-    const ms = lastWateredTs.toDate ? lastWateredTs.toDate().getTime() : lastWateredTs.seconds * 1000;
-    return Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24));
-  }
-
-  const daysAgo = getDaysSince();
+  const daysAgo = daysSinceTs(lastWateredTs);
   const interval = plant.waterIntervalDays;
-  const isOverdue = interval && (daysAgo === null || daysAgo >= interval);
+
+  const daysUntil = (() => {
+    if (!interval) return null;
+    if (wasCheckedMoreRecently && plant.nextWateringOverride) {
+      const ms = plant.nextWateringOverride.toDate
+        ? plant.nextWateringOverride.toDate().getTime()
+        : plant.nextWateringOverride.seconds * 1000;
+      const d = new Date(ms); d.setHours(0, 0, 0, 0);
+      const t = new Date(); t.setHours(0, 0, 0, 0);
+      return Math.round((d - t) / (1000 * 60 * 60 * 24));
+    }
+    if (daysAgo === null) return null;
+    return interval - daysAgo;
+  })();
+
+  const isOverdue = !!(interval && (daysUntil === null || daysUntil <= 0));
 
   function getWateredLabel() {
     if (interval) {
-      if (daysAgo === null) return 'Never watered';
-      const daysUntil = interval - daysAgo;
-      if (daysUntil > 1) return `In ${daysUntil} days`;
-      if (daysUntil === 1) return 'In 1 day';
+      if (daysUntil === null) return 'Never watered';
+      if (daysUntil > 0) return `In ${daysUntil} day${daysUntil !== 1 ? 's' : ''}`;
       if (daysUntil === 0) return 'Due today';
       return `${Math.abs(daysUntil)} day${Math.abs(daysUntil) !== 1 ? 's' : ''} late`;
     }
@@ -363,7 +493,8 @@ function PlantTile({ plant, lastWateredTs, multiSelect, isSelected, onLongPress,
     return `${daysAgo} days ago`;
   }
 
-  const badgeColor = isOverdue ? '#e07b39' : daysAgo === 0 ? '#4caf50' : daysAgo === null ? '#666' : '#4caf50';
+  const badgeIcon = wasCheckedMoreRecently && !isOverdue ? '✓' : '💧';
+  const badgeColor = isOverdue ? '#e07b39' : wasCheckedMoreRecently ? OLIVE : '#4caf50';
 
   return (
     <div
@@ -412,7 +543,7 @@ function PlantTile({ plant, lastWateredTs, multiSelect, isSelected, onLongPress,
           display: 'inline-block', background: badgeColor + '22', color: badgeColor,
           borderRadius: '6px', padding: '2px 6px', fontSize: '11px', fontWeight: '600',
         }}>
-          💧 {getWateredLabel()}
+          {badgeIcon} {getWateredLabel()}
         </div>
       </div>
     </div>

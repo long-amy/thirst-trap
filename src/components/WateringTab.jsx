@@ -1,14 +1,19 @@
 import { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, Timestamp } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, deleteField, Timestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay, isAfter, startOfDay, isToday } from 'date-fns';
 
+const OLIVE = '#8eb85a';
+
 export default function WateringTab({ plant, user, household, onPlantUpdate }) {
   const [logs, setLogs] = useState([]);
+  const [checkLogs, setCheckLogs] = useState([]);
   const [logging, setLogging] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [showCheckPopup, setShowCheckPopup] = useState(false);
   const [confirmDouble, setConfirmDouble] = useState(null);
-  const [selectedDay, setSelectedDay] = useState(null); // day tapped for log details
-  const [targetDate, setTargetDate] = useState(null);   // past day selected for logging
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [targetDate, setTargetDate] = useState(null);
   const [calendarMonth, setCalendarMonth] = useState(new Date());
   const [intervalDays, setIntervalDays] = useState(plant.waterIntervalDays ?? '');
 
@@ -21,10 +26,17 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
     });
   }, [plant.id]);
 
+  useEffect(() => {
+    const q = query(collection(db, 'checkLogs'), where('plantId', '==', plant.id));
+    return onSnapshot(q, snap => {
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      docs.sort((a, b) => (b.checkedAt?.seconds ?? 0) - (a.checkedAt?.seconds ?? 0));
+      setCheckLogs(docs);
+    });
+  }, [plant.id]);
+
   async function logWatering(confirmed = false) {
     if (logging) return;
-
-    // Double-log check only applies when logging for today
     if (!targetDate && !confirmed && logs.length > 0) {
       const latestDate = logs[0].wateredAt?.toDate();
       if (latestDate && Date.now() - latestDate.getTime() < 60 * 60 * 1000) {
@@ -33,26 +45,58 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
         return;
       }
     }
-
     setConfirmDouble(null);
     setLogging(true);
     try {
       const wateredAt = targetDate
         ? Timestamp.fromDate(new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 12, 0, 0))
         : serverTimestamp();
-
       await addDoc(collection(db, 'wateringLogs'), {
         plantId: plant.id,
         householdId: household.id,
         wateredAt,
         loggedBy: { userId: user.uid, displayName: user.displayName?.split(' ')[0] || 'Someone' },
       });
+      await updateDoc(doc(db, 'plants', plant.id), { nextWateringOverride: deleteField() });
+      onPlantUpdate({ ...plant, nextWateringOverride: null });
       setTargetDate(null);
       setSelectedDay(null);
     } catch (err) {
       console.error('Watering log failed', err);
     }
     setLogging(false);
+  }
+
+  async function logCheck(intervalAction) {
+    if (checking) return;
+    setChecking(true);
+    setShowCheckPopup(false);
+    try {
+      await addDoc(collection(db, 'checkLogs'), {
+        plantId: plant.id,
+        householdId: household.id,
+        checkedAt: serverTimestamp(),
+        loggedBy: { userId: user.uid, displayName: user.displayName?.split(' ')[0] || 'Someone' },
+      });
+      if (intervalAction === 'tomorrow') {
+        const tomorrow = new Date();
+        tomorrow.setHours(0, 0, 0, 0);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const override = Timestamp.fromDate(tomorrow);
+        await updateDoc(doc(db, 'plants', plant.id), { nextWateringOverride: override });
+        onPlantUpdate({ ...plant, nextWateringOverride: override });
+      } else if (intervalAction === 'cycle' && plant.waterIntervalDays) {
+        const next = new Date();
+        next.setHours(0, 0, 0, 0);
+        next.setDate(next.getDate() + plant.waterIntervalDays);
+        const override = Timestamp.fromDate(next);
+        await updateDoc(doc(db, 'plants', plant.id), { nextWateringOverride: override });
+        onPlantUpdate({ ...plant, nextWateringOverride: override });
+      }
+    } catch (err) {
+      console.error('Check log failed', err);
+    }
+    setChecking(false);
   }
 
   async function saveInterval(val) {
@@ -68,15 +112,13 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
   }
 
   function handleDayTap(day) {
-    if (isAfter(startOfDay(day), startOfDay(new Date()))) return; // block future
-
-    const dayLogs = logsOnDay(day);
-    if (dayLogs.length > 0) {
-      // Show/hide log details
+    if (isAfter(startOfDay(day), startOfDay(new Date()))) return;
+    const dayWaterLogs = logsOnDay(day);
+    const dayCheckLogs = checkLogsOnDay(day);
+    if (dayWaterLogs.length > 0 || dayCheckLogs.length > 0) {
       setSelectedDay(prev => prev && isSameDay(prev, day) ? null : day);
       setTargetDate(null);
     } else {
-      // Select as target date (or deselect if already selected)
       if (isToday(day)) {
         setTargetDate(null);
         setSelectedDay(null);
@@ -88,9 +130,15 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
     }
   }
 
+  // Midnight-normalized days-ago (fixes off-by-one bug)
   const lastLog = logs[0];
   const lastDate = lastLog?.wateredAt?.toDate();
-  const daysAgo = lastDate ? Math.floor((Date.now() - lastDate.getTime()) / (1000 * 60 * 60 * 24)) : null;
+  const daysAgo = (() => {
+    if (!lastDate) return null;
+    const d = new Date(lastDate); d.setHours(0, 0, 0, 0);
+    const t = new Date(); t.setHours(0, 0, 0, 0);
+    return Math.round((t - d) / (1000 * 60 * 60 * 24));
+  })();
 
   function lastWateredLabel() {
     if (!lastDate) return 'Never watered';
@@ -119,8 +167,6 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
   const monthStart = startOfMonth(calendarMonth);
   const days = eachDayOfInterval({ start: monthStart, end: endOfMonth(calendarMonth) });
   const today = startOfDay(new Date());
-
-  // Projection: based on the most recent watering by date (logs[0] after sort)
   const interval = plant.waterIntervalDays;
   const projectedDate = lastDate && interval
     ? startOfDay(new Date(lastDate.getTime() + interval * 24 * 60 * 60 * 1000))
@@ -130,9 +176,12 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
     return logs.filter(l => l.wateredAt && isSameDay(l.wateredAt.toDate(), day));
   }
 
+  function checkLogsOnDay(day) {
+    return checkLogs.filter(l => l.checkedAt && isSameDay(l.checkedAt.toDate(), day));
+  }
+
   return (
     <div style={{ padding: '20px 16px', color: '#fff' }}>
-      {/* Last watered summary */}
       <div style={{
         background: daysAgo === 0 ? '#0a2233' : '#1a2e1a',
         borderRadius: '14px', padding: '16px', marginBottom: '16px',
@@ -143,7 +192,6 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
         </p>
       </div>
 
-      {/* Target date banner */}
       {targetDate && (
         <div style={{
           background: '#1a2a33', border: '1px solid #5ba3be', borderRadius: '12px',
@@ -157,7 +205,6 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
         </div>
       )}
 
-      {/* Double-log warning */}
       {confirmDouble ? (
         <div style={{ background: '#2d2010', border: '1px solid #e07b39', borderRadius: '14px', padding: '16px', marginBottom: '16px' }}>
           <p style={{ color: '#e07b39', margin: '0 0 12px', fontSize: '14px' }}>
@@ -169,16 +216,32 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
           </div>
         </div>
       ) : (
-        <button onClick={() => logWatering(false)} disabled={logging} style={{
-          width: '100%', background: '#5ba3be', color: '#fff', border: 'none',
-          borderRadius: '12px', padding: '16px', fontSize: '17px', fontWeight: '700',
-          cursor: 'pointer', marginBottom: '16px',
-        }}>
-          {waterButtonLabel()}
-        </button>
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+          <button
+            onClick={() => logWatering(false)}
+            disabled={logging}
+            style={{
+              flex: 1, background: '#5ba3be', color: '#fff', border: 'none',
+              borderRadius: '12px', padding: '16px', fontSize: '17px', fontWeight: '700',
+              cursor: 'pointer', opacity: logging ? 0.6 : 1,
+            }}
+          >
+            {waterButtonLabel()}
+          </button>
+          <button
+            onClick={() => setShowCheckPopup(true)}
+            disabled={checking}
+            style={{
+              flex: 1, background: 'transparent', color: OLIVE,
+              border: `2px solid ${OLIVE}`, borderRadius: '12px', padding: '16px',
+              fontSize: '17px', fontWeight: '700', cursor: 'pointer', opacity: checking ? 0.6 : 1,
+            }}
+          >
+            {checking ? 'Logging...' : '✓ Checked'}
+          </button>
+        </div>
       )}
 
-      {/* Interval setting */}
       <div style={{
         background: '#1a2e1a', borderRadius: '12px', padding: '14px 16px',
         border: '1px solid #2d4a2d', marginBottom: '20px',
@@ -200,13 +263,11 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
         {intervalDays && <span style={{ color: '#6a8f6a', fontSize: '12px', marginLeft: 'auto' }}>saved</span>}
       </div>
 
-      {/* Stats */}
       <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
         <StatCard label="Avg per week" value={avgPerWeek} />
         <StatCard label="Total waterings" value={totalWaterings} />
       </div>
 
-      {/* Calendar */}
       <div style={{ background: '#1a2e1a', borderRadius: '14px', padding: '16px', border: '1px solid #2d4a2d' }}>
         <p style={{ color: '#6a8f6a', fontSize: '12px', margin: '0 0 12px', textAlign: 'center' }}>
           Tap any past day to log a watering for that date
@@ -223,20 +284,26 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
           {Array(getDay(monthStart)).fill(null).map((_, i) => <div key={`pad-${i}`} />)}
           {days.map(day => {
             const dayLogs = logsOnDay(day);
-            const hasLog = dayLogs.length > 0;
+            const dayChecks = checkLogsOnDay(day);
+            const hasWaterLog = dayLogs.length > 0;
+            const hasCheckLog = dayChecks.length > 0;
             const isFuture = isAfter(startOfDay(day), today);
             const isSelected = selectedDay && isSameDay(selectedDay, day);
             const isTarget = targetDate && isSameDay(targetDate, day);
-            const isProjected = projectedDate && isSameDay(startOfDay(day), projectedDate) && !hasLog;
+            const isProjected = projectedDate && isSameDay(startOfDay(day), projectedDate) && !hasWaterLog;
             const projectedMissed = isProjected && isAfter(today, projectedDate);
 
             let bg = 'transparent';
             let color = isFuture ? '#3a5a3a' : '#a8c5a0';
             let border = 'none';
 
-            if (hasLog) {
+            if (hasWaterLog) {
               bg = isSelected ? '#0277bd' : '#5ba3be';
               color = '#fff';
+            } else if (hasCheckLog) {
+              bg = isSelected ? '#3a5a20' : 'transparent';
+              color = OLIVE;
+              border = `2px solid ${OLIVE}`;
             } else if (isTarget) {
               bg = '#1a3a4a'; color = '#5ba3be';
               border = '1px dashed #5ba3be';
@@ -253,7 +320,7 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
                   aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center',
                   borderRadius: '50%', background: bg, color, fontSize: '13px',
                   cursor: isFuture ? 'default' : 'pointer',
-                  fontWeight: hasLog || isTarget || isProjected ? '700' : '400',
+                  fontWeight: hasWaterLog || hasCheckLog || isTarget || isProjected ? '700' : '400',
                   border,
                 }}
               >
@@ -262,12 +329,64 @@ export default function WateringTab({ plant, user, household, onPlantUpdate }) {
             );
           })}
         </div>
-        {selectedDay && logsOnDay(selectedDay).map((log, i) => (
-          <div key={i} style={{ marginTop: '12px', padding: '10px', background: '#0f1f0f', borderRadius: '10px', fontSize: '13px', color: '#a8c5a0' }}>
-            💧 {log.loggedBy?.displayName || 'Someone'} — {log.wateredAt?.toDate ? format(log.wateredAt.toDate(), 'h:mm a') : ''}
-          </div>
-        ))}
+        {selectedDay && (
+          <>
+            {logsOnDay(selectedDay).map((log, i) => (
+              <div key={`w-${i}`} style={{ marginTop: '12px', padding: '10px', background: '#0f1f0f', borderRadius: '10px', fontSize: '13px', color: '#a8c5a0' }}>
+                💧 {log.loggedBy?.displayName || 'Someone'} — {log.wateredAt?.toDate ? format(log.wateredAt.toDate(), 'h:mm a') : ''}
+              </div>
+            ))}
+            {checkLogsOnDay(selectedDay).map((log, i) => (
+              <div key={`c-${i}`} style={{ marginTop: '8px', padding: '10px', background: '#0f1f0f', borderRadius: '10px', fontSize: '13px', color: OLIVE }}>
+                ✓ {log.loggedBy?.displayName || 'Someone'} checked — {log.checkedAt?.toDate ? format(log.checkedAt.toDate(), 'h:mm a') : ''}
+              </div>
+            ))}
+          </>
+        )}
       </div>
+
+      {showCheckPopup && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 200, display: 'flex', alignItems: 'flex-end' }}
+          onClick={() => setShowCheckPopup(false)}
+        >
+          <div
+            style={{ background: '#1a2e1a', borderRadius: '20px 20px 0 0', padding: '24px', width: '100%', boxSizing: 'border-box' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 style={{ color: '#fff', margin: '0 0 6px', fontSize: '18px' }}>How's it looking?</h3>
+            <p style={{ color: '#a8c5a0', margin: '0 0 20px', fontSize: '14px' }}>Adjust the watering schedule if needed.</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <button onClick={() => logCheck('keep')} style={checkOptionBtn}>
+                <span style={{ fontSize: '22px' }}>📅</span>
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ fontWeight: '700', color: '#fff', fontSize: '15px' }}>Keep same schedule</div>
+                  <div style={{ fontSize: '12px', color: '#a8c5a0' }}>No change to watering timeline</div>
+                </div>
+              </button>
+              <button onClick={() => logCheck('tomorrow')} style={checkOptionBtn}>
+                <span style={{ fontSize: '22px' }}>⏭️</span>
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ fontWeight: '700', color: '#fff', fontSize: '15px' }}>Push to tomorrow</div>
+                  <div style={{ fontSize: '12px', color: '#a8c5a0' }}>Come back and water it tomorrow</div>
+                </div>
+              </button>
+              {plant.waterIntervalDays && (
+                <button onClick={() => logCheck('cycle')} style={checkOptionBtn}>
+                  <span style={{ fontSize: '22px' }}>🔄</span>
+                  <div style={{ textAlign: 'left' }}>
+                    <div style={{ fontWeight: '700', color: '#fff', fontSize: '15px' }}>Push a full cycle</div>
+                    <div style={{ fontSize: '12px', color: '#a8c5a0' }}>Water in {plant.waterIntervalDays} more days</div>
+                  </div>
+                </button>
+              )}
+              <button onClick={() => setShowCheckPopup(false)} style={{ ...checkOptionBtn, background: 'transparent', border: '1px solid #2d4a2d', justifyContent: 'center' }}>
+                <span style={{ color: '#a8c5a0', fontSize: '15px' }}>Cancel</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -283,3 +402,8 @@ function StatCard({ label, value }) {
 
 const smallBtn = { flex: 1, padding: '10px', borderRadius: '8px', border: 'none', fontSize: '14px', fontWeight: '600', cursor: 'pointer' };
 const navBtn = { background: 'none', border: 'none', color: '#a8c5a0', fontSize: '20px', cursor: 'pointer', padding: '4px 10px' };
+const checkOptionBtn = {
+  display: 'flex', alignItems: 'center', gap: '14px',
+  background: '#0f1f0f', border: 'none', borderRadius: '12px',
+  padding: '14px 16px', cursor: 'pointer', width: '100%', boxSizing: 'border-box',
+};
