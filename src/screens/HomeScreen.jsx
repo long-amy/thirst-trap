@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, writeBatch, doc, deleteField, Timestamp } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, writeBatch, doc, deleteField, Timestamp } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth } from '../lib/firebase';
 import AddPlantModal from '../components/AddPlantModal';
 import HouseholdModal from '../components/HouseholdModal';
 import ThirstQuencher from '../components/ThirstQuencher';
 import NotificationSettings from '../components/NotificationSettings';
+import { wateringStatus, thirstScore, CARE_COLORS } from '../lib/dates';
+import { archiveReasonLabel } from '../lib/archive';
+import { useBackGuard } from '../hooks/useBackGuard';
 
-const OLIVE = '#8eb85a';
+const OLIVE = CARE_COLORS.check;
+const NAV_HEIGHT = 64;
 
 const SORT_OPTIONS = [
   { key: 'thirstiest', label: '💧 Thirstiest' },
@@ -23,6 +27,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
   const [lastChecked, setLastChecked] = useState({});
   const [sort, setSort] = useState('thirstiest');
   const [locationFilter, setLocationFilter] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
   const [showHousehold, setShowHousehold] = useState(false);
   const [showQuencher, setShowQuencher] = useState(false);
   const [multiSelect, setMultiSelect] = useState(false);
@@ -32,6 +37,11 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
   const [showBatchDatePicker, setShowBatchDatePicker] = useState(false);
   const [pendingBatchType, setPendingBatchType] = useState(null);
   const [batchDate, setBatchDate] = useState('');
+
+  // Back gesture unwinds these layers instead of closing the app
+  useBackGuard(showBatchDatePicker, () => setShowBatchDatePicker(false));
+  useBackGuard(multiSelect && !showBatchDatePicker, () => { setMultiSelect(false); setSelected(new Set()); });
+  useBackGuard(showArchived && !multiSelect, () => setShowArchived(false));
 
   useEffect(() => {
     if (!household) return;
@@ -71,47 +81,31 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
     });
   }, [household]);
 
-  // Midnight-normalized days since a timestamp (fixes off-by-one)
-  function daysSinceTs(ts) {
-    if (!ts) return null;
-    const ms = ts.toDate ? ts.toDate().getTime() : ts.seconds * 1000;
-    const d = new Date(ms); d.setHours(0, 0, 0, 0);
-    const t = new Date(); t.setHours(0, 0, 0, 0);
-    return Math.round((t - d) / (1000 * 60 * 60 * 24));
-  }
-
-  function thirstScore(plant) {
-    const interval = plant.waterIntervalDays;
-    if (!interval) return -1;
-    // If a check pushed the schedule, sort based on the override
-    if (plant.nextWateringOverride) {
-      const ms = plant.nextWateringOverride.toDate
-        ? plant.nextWateringOverride.toDate().getTime()
-        : plant.nextWateringOverride.seconds * 1000;
-      const d = new Date(ms); d.setHours(0, 0, 0, 0);
-      const t = new Date(); t.setHours(0, 0, 0, 0);
-      const daysUntil = Math.round((d - t) / (1000 * 60 * 60 * 24));
-      return -daysUntil / interval;
-    }
-    const days = daysSinceTs(lastWatered[plant.id]);
-    if (days === null) return interval + 1000;
-    return days / interval;
-  }
-
-  const locations = [...new Set(plants.map(p => p.location).filter(Boolean))].sort();
+  const activePlants = plants.filter(p => !p.archived);
+  const archivedPlants = plants.filter(p => p.archived);
+  const locations = [...new Set(activePlants.map(p => p.location).filter(Boolean))].sort();
 
   function sortedPlants() {
-    let filtered = plants.filter(p =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.location?.toLowerCase().includes(search.toLowerCase())
+    const pool = showArchived ? archivedPlants : activePlants;
+    const term = search.toLowerCase();
+    let filtered = pool.filter(p =>
+      p.name.toLowerCase().includes(term) || p.location?.toLowerCase().includes(term)
     );
-    if (locationFilter) filtered = filtered.filter(p => p.location === locationFilter);
+    if (locationFilter && !showArchived) filtered = filtered.filter(p => p.location === locationFilter);
+    if (showArchived) {
+      return [...filtered].sort((a, b) => (b.archivedAt?.seconds ?? 0) - (a.archivedAt?.seconds ?? 0));
+    }
     if (sort === 'alpha') return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
     if (sort === 'recent') return filtered;
-    return [...filtered].sort((a, b) => thirstScore(b) - thirstScore(a));
+    return [...filtered].sort(
+      (a, b) =>
+        thirstScore(b, lastWatered[b.id], lastChecked[b.id]) -
+        thirstScore(a, lastWatered[a.id], lastChecked[a.id])
+    );
   }
 
   function enterMultiSelect(plantId) {
+    if (showArchived) return;
     setMultiSelect(true);
     setSelected(new Set([plantId]));
   }
@@ -167,7 +161,11 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
   const displayPlants = sortedPlants();
 
   return (
-    <div style={{ minHeight: '100dvh', background: '#0f1f0f', fontFamily: 'system-ui, -apple-system, sans-serif', paddingBottom: multiSelect ? '100px' : '24px' }}>
+    <div style={{
+      minHeight: '100dvh', background: '#0f1f0f',
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      paddingBottom: multiSelect ? `${NAV_HEIGHT + 92}px` : `${NAV_HEIGHT + 24}px`,
+    }}>
       <div style={{ padding: '20px 16px 12px', position: 'sticky', top: 0, background: '#0f1f0f', zIndex: 10 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '8px' }}>
           <h1 style={{ color: '#fff', fontSize: '24px', fontWeight: '700', margin: 0 }}>
@@ -189,19 +187,13 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
             </button>
             <button
               onClick={() => setShowNotifSettings(true)}
-              style={{
-                background: '#1e331e', border: '1px solid #2d4a2d', borderRadius: '10px',
-                padding: '6px 10px', cursor: 'pointer', fontSize: '16px', color: '#a8c5a0', lineHeight: 1,
-              }}
+              style={iconBtn}
             >
               🔔
             </button>
             <button
               onClick={() => signOut(auth)}
-              style={{
-                background: '#1e331e', border: '1px solid #2d4a2d', borderRadius: '10px',
-                padding: '6px 10px', cursor: 'pointer', fontSize: '16px', color: '#a8c5a0', lineHeight: 1,
-              }}
+              style={iconBtn}
             >
               ⏻
             </button>
@@ -221,56 +213,46 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
               }}
             />
             <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', alignItems: 'center' }}>
-              <span style={{ color: '#6a8f6a', fontSize: '12px', flexShrink: 0 }}>Sort:</span>
-              {SORT_OPTIONS.map(opt => (
-                <button
-                  key={opt.key}
-                  onClick={() => setSort(opt.key)}
-                  style={{
-                    flexShrink: 0, padding: '5px 10px', borderRadius: '20px', fontSize: '12px',
-                    fontWeight: sort === opt.key ? '700' : '400',
-                    background: sort === opt.key ? '#4caf50' : '#1e331e',
-                    color: sort === opt.key ? '#fff' : '#a8c5a0',
-                    border: sort === opt.key ? 'none' : '1px solid #2d4a2d',
-                    cursor: 'pointer', whiteSpace: 'nowrap',
-                  }}
+              {!showArchived && (
+                <>
+                  <span style={{ color: '#6a8f6a', fontSize: '12px', flexShrink: 0 }}>Sort:</span>
+                  {SORT_OPTIONS.map(opt => (
+                    <Chip key={opt.key} active={sort === opt.key} onClick={() => setSort(opt.key)}>
+                      {opt.label}
+                    </Chip>
+                  ))}
+                </>
+              )}
+              {archivedPlants.length > 0 && (
+                <Chip
+                  active={showArchived}
+                  activeBg="#3a3018"
+                  activeColor="#e0c070"
+                  activeBorder="#8a7030"
+                  onClick={() => { setShowArchived(v => !v); exitMultiSelect(); }}
                 >
-                  {opt.label}
-                </button>
-              ))}
+                  📦 Archived ({archivedPlants.length})
+                </Chip>
+              )}
             </div>
 
-            {locations.length > 1 && (
+            {locations.length > 1 && !showArchived && (
               <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', marginTop: '6px' }}>
                 <span style={{ color: '#6a8f6a', fontSize: '12px', flexShrink: 0, alignSelf: 'center' }}>📍</span>
-                <button
-                  onClick={() => setLocationFilter(null)}
-                  style={{
-                    flexShrink: 0, padding: '5px 10px', borderRadius: '20px', fontSize: '12px',
-                    fontWeight: !locationFilter ? '700' : '400',
-                    background: !locationFilter ? '#2d4a1e' : '#1e331e',
-                    color: !locationFilter ? '#a8e080' : '#a8c5a0',
-                    border: !locationFilter ? '1px solid #4caf50' : '1px solid #2d4a2d',
-                    cursor: 'pointer', whiteSpace: 'nowrap',
-                  }}
-                >
+                <Chip active={!locationFilter} activeBg="#2d4a1e" activeColor="#a8e080" activeBorder="#4caf50" onClick={() => setLocationFilter(null)}>
                   All
-                </button>
+                </Chip>
                 {locations.map(loc => (
-                  <button
+                  <Chip
                     key={loc}
-                    onClick={() => setLocationFilter(f => f === loc ? null : loc)}
-                    style={{
-                      flexShrink: 0, padding: '5px 10px', borderRadius: '20px', fontSize: '12px',
-                      fontWeight: locationFilter === loc ? '700' : '400',
-                      background: locationFilter === loc ? '#2d4a1e' : '#1e331e',
-                      color: locationFilter === loc ? '#a8e080' : '#a8c5a0',
-                      border: locationFilter === loc ? '1px solid #4caf50' : '1px solid #2d4a2d',
-                      cursor: 'pointer', whiteSpace: 'nowrap',
-                    }}
+                    active={locationFilter === loc}
+                    activeBg="#2d4a1e"
+                    activeColor="#a8e080"
+                    activeBorder="#4caf50"
+                    onClick={() => setLocationFilter(f => (f === loc ? null : loc))}
                   >
                     {loc}
-                  </button>
+                  </Chip>
                 ))}
               </div>
             )}
@@ -291,8 +273,10 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
 
       {displayPlants.length === 0 && !search && (
         <div style={{ textAlign: 'center', padding: '60px 24px', color: '#a8c5a0' }}>
-          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🪴</div>
-          <p style={{ fontSize: '16px', margin: 0 }}>No plants yet. Add your first one!</p>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>{showArchived ? '📦' : '🪴'}</div>
+          <p style={{ fontSize: '16px', margin: 0 }}>
+            {showArchived ? 'Nothing archived.' : 'No plants yet. Add your first one!'}
+          </p>
         </div>
       )}
 
@@ -306,22 +290,22 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
             multiSelect={multiSelect}
             isSelected={selected.has(plant.id)}
             onLongPress={() => enterMultiSelect(plant.id)}
-            onClick={() => multiSelect ? toggleSelect(plant.id) : onSelectPlant(plant)}
+            onClick={() => (multiSelect ? toggleSelect(plant.id) : onSelectPlant(plant))}
           />
         ))}
       </div>
 
-      {!multiSelect && (
+      {!multiSelect && !showArchived && (
         <>
           <button
             onClick={() => setShowQuencher(true)}
             style={{
-              position: 'fixed', bottom: '24px', left: '20px',
-              width: '60px', height: '60px', borderRadius: '50%',
+              position: 'fixed', bottom: `${NAV_HEIGHT + 16}px`, left: '20px',
+              width: '56px', height: '56px', borderRadius: '50%',
               background: '#1e3a1e', border: '1px solid #4caf50', color: '#fff',
               cursor: 'pointer', boxShadow: '0 4px 16px rgba(76,175,80,0.2)',
               display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20,
-              fontSize: '26px',
+              fontSize: '24px',
             }}
           >
             🚿
@@ -329,21 +313,21 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
           <button
             onClick={() => setShowAdd(true)}
             style={{
-              position: 'fixed', bottom: '24px', right: '20px',
-              width: '60px', height: '60px', borderRadius: '50%',
+              position: 'fixed', bottom: `${NAV_HEIGHT + 16}px`, right: '20px',
+              width: '56px', height: '56px', borderRadius: '50%',
               background: '#4caf50', color: '#fff', border: 'none',
               cursor: 'pointer', boxShadow: '0 4px 16px rgba(76,175,80,0.4)',
               display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20,
             }}
           >
-            <span style={{ fontSize: '26px' }}>🌱</span>
+            <span style={{ fontSize: '24px' }}>🌱</span>
           </button>
         </>
       )}
 
       {multiSelect && (
         <div style={{
-          position: 'fixed', bottom: 0, left: 0, right: 0,
+          position: 'fixed', bottom: `${NAV_HEIGHT}px`, left: 0, right: 0,
           background: '#1a2e1a', borderTop: '1px solid #2d4a2d',
           padding: '16px', display: 'flex', gap: '8px', zIndex: 30,
         }}>
@@ -351,7 +335,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
             onClick={() => initiateBatch('water')}
             disabled={!selected.size || batching}
             style={{
-              flex: 1, background: '#5ba3be', color: '#fff', border: 'none',
+              flex: 1, background: CARE_COLORS.water, color: '#fff', border: 'none',
               borderRadius: '12px', padding: '14px 6px', fontSize: '14px', fontWeight: '700',
               cursor: 'pointer', opacity: !selected.size ? 0.5 : 1,
             }}
@@ -373,7 +357,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
             onClick={() => initiateBatch('fertilize')}
             disabled={!selected.size || batching}
             style={{
-              flex: 1, background: '#c06080', color: '#fff', border: 'none',
+              flex: 1, background: CARE_COLORS.fertilizer, color: '#fff', border: 'none',
               borderRadius: '12px', padding: '14px 6px', fontSize: '14px', fontWeight: '700',
               cursor: 'pointer', opacity: !selected.size ? 0.5 : 1,
             }}
@@ -409,7 +393,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
                 disabled={!batchDate || batching}
                 style={{
                   flex: 1,
-                  background: pendingBatchType === 'water' ? '#5ba3be' : pendingBatchType === 'check' ? OLIVE : '#c06080',
+                  background: pendingBatchType === 'water' ? CARE_COLORS.water : pendingBatchType === 'check' ? OLIVE : CARE_COLORS.fertilizer,
                   color: '#fff', border: 'none', borderRadius: '10px', padding: '12px',
                   fontWeight: '700', cursor: 'pointer', fontSize: '15px',
                 }}
@@ -432,8 +416,9 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
       {showHousehold && <HouseholdModal household={household} onClose={() => setShowHousehold(false)} />}
       {showQuencher && (
         <ThirstQuencher
-          plants={plants}
+          plants={activePlants}
           lastWatered={lastWatered}
+          lastChecked={lastChecked}
           user={user}
           household={household}
           onClose={() => setShowQuencher(false)}
@@ -443,58 +428,40 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
   );
 }
 
+function Chip({ active, onClick, children, activeBg = '#4caf50', activeColor = '#fff', activeBorder }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flexShrink: 0, padding: '5px 10px', borderRadius: '20px', fontSize: '12px',
+        fontWeight: active ? '700' : '400',
+        background: active ? activeBg : '#1e331e',
+        color: active ? activeColor : '#a8c5a0',
+        border: active && !activeBorder ? 'none' : `1px solid ${active ? activeBorder : '#2d4a2d'}`,
+        cursor: 'pointer', whiteSpace: 'nowrap',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function PlantTile({ plant, lastWateredTs, lastCheckedTs, multiSelect, isSelected, onLongPress, onClick }) {
   const pressTimer = useRef(null);
 
   function startPress() { pressTimer.current = setTimeout(() => onLongPress(), 600); }
   function cancelPress() { if (pressTimer.current) { clearTimeout(pressTimer.current); pressTimer.current = null; } }
 
-  const wasCheckedMoreRecently = lastCheckedTs &&
-    (!lastWateredTs || (lastCheckedTs.seconds ?? 0) > (lastWateredTs.seconds ?? 0));
+  const status = wateringStatus(plant, lastWateredTs, lastCheckedTs);
+  const needsAttention = !plant.archived && (status.state === 'late' || status.state === 'never');
 
-  // Midnight-normalized days since a timestamp
-  function daysSinceTs(ts) {
-    if (!ts) return null;
-    const ms = ts.toDate ? ts.toDate().getTime() : ts.seconds * 1000;
-    const d = new Date(ms); d.setHours(0, 0, 0, 0);
-    const t = new Date(); t.setHours(0, 0, 0, 0);
-    return Math.round((t - d) / (1000 * 60 * 60 * 24));
-  }
-
-  const daysAgo = daysSinceTs(lastWateredTs);
-  const interval = plant.waterIntervalDays;
-
-  const daysUntil = (() => {
-    if (!interval) return null;
-    if (wasCheckedMoreRecently && plant.nextWateringOverride) {
-      const ms = plant.nextWateringOverride.toDate
-        ? plant.nextWateringOverride.toDate().getTime()
-        : plant.nextWateringOverride.seconds * 1000;
-      const d = new Date(ms); d.setHours(0, 0, 0, 0);
-      const t = new Date(); t.setHours(0, 0, 0, 0);
-      return Math.round((d - t) / (1000 * 60 * 60 * 24));
-    }
-    if (daysAgo === null) return null;
-    return interval - daysAgo;
-  })();
-
-  const isOverdue = !!(interval && (daysUntil === null || daysUntil <= 0));
-
-  function getWateredLabel() {
-    if (interval) {
-      if (daysUntil === null) return 'Never watered';
-      if (daysUntil > 0) return `In ${daysUntil} day${daysUntil !== 1 ? 's' : ''}`;
-      if (daysUntil === 0) return 'Due today';
-      return `${Math.abs(daysUntil)} day${Math.abs(daysUntil) !== 1 ? 's' : ''} late`;
-    }
-    if (daysAgo === null) return 'Never watered';
-    if (daysAgo === 0) return 'Watered today';
-    if (daysAgo === 1) return '1 day ago';
-    return `${daysAgo} days ago`;
-  }
-
-  const badgeIcon = wasCheckedMoreRecently && !isOverdue ? '✓' : '💧';
-  const badgeColor = isOverdue ? '#e07b39' : wasCheckedMoreRecently ? OLIVE : '#4caf50';
+  const borderColor = plant.archived
+    ? '#4a4020'
+    : isSelected
+      ? '#4caf50'
+      : needsAttention
+        ? CARE_COLORS.late
+        : '#2d4a2d';
 
   return (
     <div
@@ -507,17 +474,21 @@ function PlantTile({ plant, lastWateredTs, lastCheckedTs, multiSelect, isSelecte
       onTouchMove={cancelPress}
       style={{
         background: '#1a2e1a', borderRadius: '16px', overflow: 'hidden', cursor: 'pointer',
-        border: `1px solid ${isSelected ? '#4caf50' : isOverdue ? '#e07b39' : '#2d4a2d'}`,
-        boxShadow: isSelected ? '0 0 0 2px #4caf50' : isOverdue ? '0 0 0 1px #e07b3944' : 'none',
+        border: `1px solid ${borderColor}`,
+        boxShadow: isSelected ? '0 0 0 2px #4caf50' : needsAttention ? `0 0 0 1px ${CARE_COLORS.late}44` : 'none',
         transition: 'box-shadow 0.15s',
         userSelect: 'none',
       }}
     >
       <div style={{ aspectRatio: '1', overflow: 'hidden', background: '#2d4a2d', position: 'relative' }}>
         {plant.photoUrl ? (
-          <img src={plant.photoUrl} alt={plant.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <img
+            src={plant.photoUrl}
+            alt={plant.name}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', filter: plant.archived ? 'grayscale(0.7)' : 'none', opacity: plant.archived ? 0.7 : 1 }}
+          />
         ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '40px' }}>🌿</div>
+          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '40px', opacity: plant.archived ? 0.5 : 1 }}>🌿</div>
         )}
         {multiSelect && (
           <div style={{
@@ -533,19 +504,34 @@ function PlantTile({ plant, lastWateredTs, lastCheckedTs, multiSelect, isSelecte
         )}
       </div>
       <div style={{ padding: '10px' }}>
-        <div style={{ color: '#fff', fontWeight: '600', fontSize: '14px', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <div style={{ color: plant.archived ? '#a8c5a0' : '#fff', fontWeight: '600', fontSize: '14px', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {plant.name}
         </div>
         {plant.location && (
           <div style={{ color: '#a8c5a0', fontSize: '12px', marginBottom: '6px' }}>📍 {plant.location}</div>
         )}
-        <div style={{
-          display: 'inline-block', background: badgeColor + '22', color: badgeColor,
-          borderRadius: '6px', padding: '2px 6px', fontSize: '11px', fontWeight: '600',
-        }}>
-          {badgeIcon} {getWateredLabel()}
-        </div>
+        {plant.archived ? (
+          <div style={{
+            display: 'inline-block', background: '#3a301844', color: '#e0c070',
+            borderRadius: '6px', padding: '2px 6px', fontSize: '11px', fontWeight: '600',
+            maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {archiveReasonLabel(plant)}
+          </div>
+        ) : (
+          <div style={{
+            display: 'inline-block', background: status.color + '22', color: status.color,
+            borderRadius: '6px', padding: '2px 6px', fontSize: '11px', fontWeight: '600',
+          }}>
+            {status.icon} {status.label}
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+const iconBtn = {
+  background: '#1e331e', border: '1px solid #2d4a2d', borderRadius: '10px',
+  padding: '6px 10px', cursor: 'pointer', fontSize: '16px', color: '#a8c5a0', lineHeight: 1,
+};

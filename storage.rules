@@ -1,0 +1,45 @@
+rules_version = '2';
+
+// v2 - household-scoped (cross-service: reads users/{uid}.householdId from Firestore)
+
+// Photos live under two prefixes, both keyed by household:
+//   plants/{householdId}/…  — plant photos (AddPlantModal, PlantDetailScreen)
+//   health/{householdId}/…  — health-check photos (HealthTab)
+// The previous rules let any signed-in account read and overwrite every
+// household's photos; these scope access to your own household.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function myHousehold() {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.householdId
+        : null;
+    }
+
+    function ownedBy(householdId) {
+      return householdId != null && householdId == myHousehold();
+    }
+
+    // 10 MB ceiling and images only, so the bucket can't be used as free storage.
+    function validImage() {
+      return request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    match /plants/{householdId}/{fileName} {
+      allow read, delete: if ownedBy(householdId);
+      allow write: if ownedBy(householdId) && validImage();
+    }
+
+    match /health/{householdId}/{fileName} {
+      allow read, delete: if ownedBy(householdId);
+      allow write: if ownedBy(householdId) && validImage();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

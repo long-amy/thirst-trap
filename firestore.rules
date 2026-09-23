@@ -1,0 +1,117 @@
+rules_version = '2';
+
+// Thirst Trap security rules.
+//
+// The previous rules were `allow read, write: if request.auth != null`, which let
+// any signed-in Google account read and write every household's data. These scope
+// every collection to the caller's own household instead.
+//
+// Household membership is the unit of authorization: a user doc holds one
+// householdId, and every plant / log / family document carries the same field.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function myUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function myHousehold() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? myUserDoc().householdId
+        : null;
+    }
+
+    // A document belongs to me if its householdId matches mine.
+    function mine(data) {
+      return signedIn() && data.householdId != null && data.householdId == myHousehold();
+    }
+
+    // Both the existing document and the incoming one must be in my household, so
+    // a write can't move a record into or out of someone else's data.
+    function mineForWrite() {
+      return mine(request.resource.data)
+        && (resource == null || mine(resource.data));
+    }
+
+    // --- users ---------------------------------------------------------------
+    // You can only ever see or touch your own profile.
+    match /users/{userId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // --- households ----------------------------------------------------------
+    // The 6-character doc ID is the invite code, so knowing it is the credential:
+    // any signed-in user may `get` one by ID in order to join. Listing is denied,
+    // so codes can't be enumerated. Only members can change one.
+    match /households/{householdId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.members == [request.auth.uid];
+      // Joining adds yourself; membership is capped at 2.
+      allow update: if signedIn()
+        && (
+          request.auth.uid in resource.data.members
+          || (
+            request.auth.uid in request.resource.data.members
+            && resource.data.members.size() < 2
+            && request.resource.data.members.size() <= 2
+          )
+        );
+      allow delete: if false;
+    }
+
+    // --- household-scoped collections ----------------------------------------
+    match /plants/{plantId} {
+      allow read: if mine(resource.data);
+      allow create, update: if mineForWrite();
+      allow delete: if mine(resource.data);
+    }
+
+    match /wateringLogs/{logId} {
+      allow read: if mine(resource.data);
+      allow create, update: if mineForWrite();
+      allow delete: if mine(resource.data);
+    }
+
+    match /checkLogs/{logId} {
+      allow read: if mine(resource.data);
+      allow create, update: if mineForWrite();
+      allow delete: if mine(resource.data);
+    }
+
+    match /fertilizerLogs/{logId} {
+      allow read: if mine(resource.data);
+      allow create, update: if mineForWrite();
+      allow delete: if mine(resource.data);
+    }
+
+    match /healthLogs/{logId} {
+      allow read: if mine(resource.data);
+      allow create, update: if mineForWrite();
+      allow delete: if mine(resource.data);
+    }
+
+    match /plantFamilies/{familyId} {
+      allow read: if mine(resource.data);
+      allow create, update: if mineForWrite();
+      allow delete: if mine(resource.data);
+    }
+
+    match /familyEvents/{eventId} {
+      allow read: if mine(resource.data);
+      allow create, update: if mineForWrite();
+      allow delete: if mine(resource.data);
+    }
+
+    // Anything not matched above is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

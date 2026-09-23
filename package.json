@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:rules": "firebase emulators:exec --only firestore --project thirst-trap-test \"node test/rules.test.mjs\"",
+    "test:storage": "firebase emulators:exec --only firestore,storage --project thirst-trap-test \"node test/storage.test.mjs\"",
+    "test": "npm run test:rules && npm run test:storage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
@@ -19,6 +22,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",

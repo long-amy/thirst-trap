@@ -3,11 +3,20 @@ import { useAuth } from './hooks/useAuth';
 import LoginScreen from './screens/LoginScreen';
 import HouseholdSetupScreen from './screens/HouseholdSetupScreen';
 import HomeScreen from './screens/HomeScreen';
+import FamiliesScreen from './screens/FamiliesScreen';
 import PlantDetailScreen from './screens/PlantDetailScreen';
+import BottomNav from './components/BottomNav';
+import { useBackGuard } from './hooks/useBackGuard';
 
 export default function App() {
   const { user, household, loading } = useAuth();
+  const [tab, setTab] = useState('plants');
   const [selectedPlant, setSelectedPlant] = useState(null);
+
+  // Android back gesture: leave the plant, or fall back to the Plants tab,
+  // rather than closing the app outright.
+  useBackGuard(!!selectedPlant, () => setSelectedPlant(null));
+  useBackGuard(!selectedPlant && tab !== 'plants', () => setTab('plants'));
 
   if (loading) {
     return (
@@ -34,14 +43,26 @@ export default function App() {
       household={household}
       onBack={() => setSelectedPlant(null)}
       onPlantUpdate={setSelectedPlant}
+      onSelectPlant={setSelectedPlant}
     />
   );
 
   return (
-    <HomeScreen
-      user={user}
-      household={household}
-      onSelectPlant={setSelectedPlant}
-    />
+    <>
+      {tab === 'plants' ? (
+        <HomeScreen
+          user={user}
+          household={household}
+          onSelectPlant={setSelectedPlant}
+        />
+      ) : (
+        <FamiliesScreen
+          user={user}
+          household={household}
+          onSelectPlant={setSelectedPlant}
+        />
+      )}
+      <BottomNav current={tab} onNavigate={setTab} />
+    </>
   );
 }

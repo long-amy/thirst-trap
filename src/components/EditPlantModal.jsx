@@ -1,12 +1,15 @@
 import { useState } from 'react';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { useBackGuard } from '../hooks/useBackGuard';
 
 export default function EditPlantModal({ plant, onClose, onSave }) {
   const [name, setName] = useState(plant.name);
   const [location, setLocation] = useState(plant.location ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  useBackGuard(true, onClose);
 
   async function handleSave() {
     if (!name.trim()) { setError('Plant name is required'); return; }

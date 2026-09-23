@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { getToken } from 'firebase/messaging';
 import { doc, getDoc, updateDoc, deleteField } from 'firebase/firestore';
 import { db, messaging } from '../lib/firebase';
+import { useBackGuard } from '../hooks/useBackGuard';
 
 export default function NotificationSettings({ user, onClose }) {
   const [enabled, setEnabled] = useState(false);
@@ -9,6 +10,8 @@ export default function NotificationSettings({ user, onClose }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  useBackGuard(true, onClose);
 
   useEffect(() => {
     getDoc(doc(db, 'users', user.uid)).then(snap => {

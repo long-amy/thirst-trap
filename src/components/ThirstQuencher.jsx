@@ -1,64 +1,96 @@
 import { useState } from 'react';
-import { collection, writeBatch, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, writeBatch, doc, serverTimestamp, deleteField } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { playWaterDrop, playCompletionChime, vibrate } from '../lib/sounds';
+import { wateringStatus, thirstScore, startOfLocalDay } from '../lib/dates';
+import { useBackGuard } from '../hooks/useBackGuard';
+import { format, addDays } from 'date-fns';
 
-export default function ThirstQuencher({ plants, lastWatered, user, household, onClose }) {
+const ELSEWHERE = '📦 Elsewhere';
+// Anything further out than this collapses into one "Later" group so the list
+// doesn't turn into a wall of single-plant date headers.
+const HORIZON_DAYS = 7;
+
+export default function ThirstQuencher({ plants, lastWatered, lastChecked = {}, user, household, onClose }) {
   const [checked, setChecked] = useState(new Set());
   const [quenching, setQuenching] = useState(false);
   const [done, setDone] = useState(false);
+  const [groupBy, setGroupBy] = useState('day');
 
-  function getDaysSince(plantId) {
-    const ts = lastWatered[plantId];
-    if (!ts) return null;
-    const ms = ts.toDate ? ts.toDate().getTime() : ts.seconds * 1000;
-    return Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24));
+  useBackGuard(!done, onClose);
+
+  const statusFor = plant => wateringStatus(plant, lastWatered[plant.id], lastChecked[plant.id]);
+  const scoreFor = plant => thirstScore(plant, lastWatered[plant.id], lastChecked[plant.id]);
+
+  const byThirst = [...plants].sort((a, b) => scoreFor(b) - scoreFor(a));
+
+  // --- by room -------------------------------------------------------------
+  function roomGroups() {
+    const map = new Map();
+    byThirst.forEach(plant => {
+      const key = plant.location || ELSEWHERE;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(plant);
+    });
+    return [...map.keys()]
+      .sort((a, b) => (a === ELSEWHERE ? 1 : b === ELSEWHERE ? -1 : a.localeCompare(b)))
+      .map(key => ({
+        key,
+        title: key === ELSEWHERE ? ELSEWHERE : `📍 ${key}`,
+        subtitle: null,
+        plants: map.get(key),
+        urgent: false,
+      }));
   }
 
-  function thirstScore(plant) {
-    const days = getDaysSince(plant.id);
-    const interval = plant.waterIntervalDays;
-    if (!interval) return -1;
-    if (days === null) return interval + 1000;
-    return days / interval;
-  }
+  // --- by day --------------------------------------------------------------
+  // Buckets: everything already due lands in Overdue, then one group per
+  // calendar day out to the horizon, then Later, then plants with no schedule.
+  function dayGroups() {
+    const buckets = new Map();
+    const push = (key, plant) => {
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(plant);
+    };
 
-  function isOverdue(plant) {
-    const days = getDaysSince(plant.id);
-    const interval = plant.waterIntervalDays;
-    return interval && (days === null || days >= interval);
-  }
-
-  function getDueLabel(plant) {
-    const days = getDaysSince(plant.id);
-    const interval = plant.waterIntervalDays;
-    if (!interval) {
-      if (days === null) return 'Never watered';
-      if (days === 0) return 'Watered today';
-      return `${days}d ago`;
-    }
-    const until = interval - (days ?? 0);
-    if (days === null) return 'Never watered';
-    if (until > 0) return `In ${until}d`;
-    if (until === 0) return 'Due today';
-    return `${Math.abs(until)}d late`;
-  }
-
-  // Group by location, sort within each group by thirst score desc
-  const groups = {};
-  [...plants]
-    .sort((a, b) => thirstScore(b) - thirstScore(a))
-    .forEach(plant => {
-      const key = plant.location || '📦 Elsewhere';
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(plant);
+    byThirst.forEach(plant => {
+      const { state, daysUntil } = statusFor(plant);
+      if (state === 'unset') push('none', plant);
+      else if (state === 'never' || state === 'late') push('overdue', plant);
+      else if (daysUntil > HORIZON_DAYS) push('later', plant);
+      else push(`d${daysUntil}`, plant);
     });
 
-  const locationOrder = Object.keys(groups).sort((a, b) => {
-    if (a === '📦 Elsewhere') return 1;
-    if (b === '📦 Elsewhere') return -1;
-    return a.localeCompare(b);
-  });
+    const today = startOfLocalDay(new Date());
+    const dayTitle = n =>
+      n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : format(addDays(today, n), 'EEEE');
+
+    const order = [
+      { key: 'overdue', title: '⚠️ Overdue', subtitle: 'Should already have been watered', urgent: true },
+      ...Array.from({ length: HORIZON_DAYS + 1 }, (_, n) => ({
+        key: `d${n}`,
+        title: dayTitle(n),
+        subtitle: format(addDays(today, n), 'MMM d'),
+        urgent: n === 0,
+      })),
+      { key: 'later', title: 'Later', subtitle: `More than ${HORIZON_DAYS} days out`, urgent: false },
+      { key: 'none', title: 'No schedule', subtitle: 'No watering interval set', urgent: false },
+    ];
+
+    return order
+      .filter(g => buckets.has(g.key))
+      .map(g => ({
+        ...g,
+        // Within a day, walk room by room so you're not criss-crossing the house
+        plants: [...buckets.get(g.key)].sort(
+          (a, b) =>
+            (a.location || '￿').localeCompare(b.location || '￿') ||
+            a.name.localeCompare(b.name)
+        ),
+      }));
+  }
+
+  const sections = groupBy === 'day' ? dayGroups() : roomGroups();
 
   function toggle(plantId) {
     setChecked(prev => {
@@ -88,6 +120,8 @@ export default function ThirstQuencher({ plants, lastWatered, user, household, o
           wateredAt: serverTimestamp(),
           loggedBy: { userId: user.uid, displayName },
         });
+        // Watering supersedes any "check pushed this out" override
+        batch.update(doc(db, 'plants', plantId), { nextWateringOverride: deleteField() });
       });
       await batch.commit();
       playCompletionChime();
@@ -145,25 +179,57 @@ export default function ThirstQuencher({ plants, lastWatered, user, household, o
             ←
           </button>
         </div>
+
+        <div style={{ display: 'flex', gap: '6px', marginTop: '12px', alignItems: 'center' }}>
+          <span style={{ color: '#6a8f6a', fontSize: '12px' }}>Group by:</span>
+          {[
+            { key: 'day', label: '📅 Day' },
+            { key: 'room', label: '📍 Room' },
+          ].map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => setGroupBy(opt.key)}
+              style={{
+                padding: '5px 12px', borderRadius: '20px', fontSize: '12px',
+                fontWeight: groupBy === opt.key ? '700' : '400',
+                background: groupBy === opt.key ? '#4caf50' : '#1e331e',
+                color: groupBy === opt.key ? '#fff' : '#a8c5a0',
+                border: groupBy === opt.key ? 'none' : '1px solid #2d4a2d',
+                cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Plant list */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px 100px' }}>
-        {locationOrder.map(location => (
-          <div key={location} style={{ marginBottom: '20px' }}>
+        {sections.map(section => (
+          <div key={section.key} style={{ marginBottom: '20px' }}>
             <div style={{
-              color: '#6a8f6a', fontSize: '12px', fontWeight: '700',
-              textTransform: 'uppercase', letterSpacing: '1px',
+              display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '8px',
               marginBottom: '8px', paddingBottom: '6px',
-              borderBottom: '1px solid #1a2e1a',
+              borderBottom: `1px solid ${section.urgent ? '#2d4a2d' : '#1a2e1a'}`,
             }}>
-              {location === '📦 Elsewhere' ? '📦 Elsewhere' : `📍 ${location}`}
+              <span style={{
+                color: section.urgent ? '#e0a060' : '#6a8f6a', fontSize: '12px', fontWeight: '700',
+                textTransform: 'uppercase', letterSpacing: '1px',
+              }}>
+                {section.title}
+              </span>
+              <span style={{ color: '#3a5a3a', fontSize: '11px', whiteSpace: 'nowrap' }}>
+                {section.subtitle ? `${section.subtitle} · ` : ''}
+                {section.plants.length} plant{section.plants.length !== 1 ? 's' : ''}
+              </span>
             </div>
-            {groups[location].map(plant => {
+            {section.plants.map(plant => {
               const isChecked = checked.has(plant.id);
-              const overdue = isOverdue(plant);
-              const dueLabel = getDueLabel(plant);
-              const dueColor = overdue ? '#e07b39' : '#4caf50';
+              const status = statusFor(plant);
+              const overdue = status.state === 'late' || status.state === 'never';
+              const dueLabel = status.shortLabel;
+              const dueColor = status.color;
 
               return (
                 <div
@@ -202,10 +268,12 @@ export default function ThirstQuencher({ plants, lastWatered, user, household, o
                       {plant.name}
                     </div>
                     <div style={{
-                      color: isChecked ? '#3a5a3a' : dueColor,
+                      color: isChecked ? '#3a5a3a' : groupBy === 'day' ? '#6a8f6a' : dueColor,
                       fontSize: '12px', marginTop: '2px', fontWeight: '600',
                     }}>
-                      💧 {dueLabel}
+                      {groupBy === 'day'
+                        ? (plant.location ? `📍 ${plant.location}` : ELSEWHERE)
+                        : `${status.icon} ${dueLabel}`}
                     </div>
                   </div>
 

@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
+import { useBackGuard } from '../hooks/useBackGuard';
 
 export default function AddPlantModal({ user, household, onClose }) {
   const [photoFile, setPhotoFile] = useState(null);
@@ -11,6 +12,8 @@ export default function AddPlantModal({ user, household, onClose }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef();
+
+  useBackGuard(true, onClose);
 
   function handlePhotoSelect(e) {
     const file = e.target.files?.[0];

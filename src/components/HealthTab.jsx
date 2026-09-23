@@ -19,6 +19,7 @@ export default function HealthTab({ plant, user, household }) {
   useEffect(() => {
     const q = query(
       collection(db, 'healthLogs'),
+      where('householdId', '==', household.id),
       where('plantId', '==', plant.id)
     );
     return onSnapshot(q, snap => {
@@ -26,7 +27,7 @@ export default function HealthTab({ plant, user, household }) {
       docs.sort((a, b) => (b.createdAt?.seconds ?? 0) - (a.createdAt?.seconds ?? 0));
       setLogs(docs);
     });
-  }, [plant.id]);
+  }, [plant.id, household.id]);
 
   function handlePhotoSelect(e) {
     const file = e.target.files?.[0];
@@ -44,23 +45,16 @@ export default function HealthTab({ plant, user, household }) {
     setPendingEntry({ id: tempId, pending: true, note, photoPreview });
 
     try {
-      // Convert image to base64 (chunked to handle large phone photos)
-      const arrayBuffer = await photoFile.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      let binary = '';
-      const chunkSize = 8192;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-      }
-      const base64 = btoa(binary);
-
-      // Call Claude
-      const analysis = await analyzePlantHealth(base64, photoFile.type, note);
-
-      // Upload photo
-      const storageRef = ref(storage, `health/${household.id}/${Date.now()}_${photoFile.name}`);
+      // Upload first: the analyzer reads the photo from Storage by path, which
+      // keeps large phone photos under the callable request limit and means the
+      // photo survives even if the analysis fails.
+      const storagePath = `health/${household.id}/${Date.now()}_${photoFile.name}`;
+      const storageRef = ref(storage, storagePath);
       await uploadBytes(storageRef, photoFile);
       const photoUrl = await getDownloadURL(storageRef);
+
+      // Call Claude via the Cloud Function (the API key never reaches the browser)
+      const analysis = await analyzePlantHealth(storagePath, note);
 
       // Save to Firestore
       await addDoc(collection(db, 'healthLogs'), {

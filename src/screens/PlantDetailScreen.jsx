@@ -1,20 +1,24 @@
 import { useState, useRef, useEffect } from 'react';
-import WateringTab from '../components/WateringTab';
-import FertilizerTab from '../components/FertilizerTab';
+import CareTab from '../components/CareTab';
+import FamilyTab from '../components/FamilyTab';
 import HealthTab from '../components/HealthTab';
 import EditPlantModal from '../components/EditPlantModal';
+import ArchivePlantModal from '../components/ArchivePlantModal';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { doc, updateDoc, deleteDoc, deleteField } from 'firebase/firestore';
 import { db, storage } from '../lib/firebase';
+import { archiveReasonLabel } from '../lib/archive';
+import { useBackGuard } from '../hooks/useBackGuard';
 
 const TABS = [
-  { key: 'watering', label: '💧 Watering' },
-  { key: 'fertilizer', label: '🌿 Fertilizer' },
+  { key: 'care', label: '💧 Care' },
+  { key: 'family', label: '🌳 Family' },
   { key: 'health', label: '🔍 Health' },
 ];
 
-export default function PlantDetailScreen({ plant, user, household, onBack, onPlantUpdate }) {
-  const [tab, setTab] = useState('watering');
+export default function PlantDetailScreen({ plant, user, household, onBack, onPlantUpdate, onSelectPlant }) {
+  const [tab, setTab] = useState('care');
+  const [showArchive, setShowArchive] = useState(false);
   const [updatingPhoto, setUpdatingPhoto] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
@@ -22,6 +26,9 @@ export default function PlantDetailScreen({ plant, user, household, onBack, onPl
   const [deleting, setDeleting] = useState(false);
   const [notes, setNotes] = useState(plant.notes ?? '');
   const photoInputRef = useRef();
+
+  useBackGuard(showDeleteConfirm, () => setShowDeleteConfirm(false));
+  useBackGuard(menuOpen, () => setMenuOpen(false));
 
   // Close menu on outside tap
   useEffect(() => {
@@ -50,6 +57,18 @@ export default function PlantDetailScreen({ plant, user, household, onBack, onPl
   async function saveNotes(value) {
     await updateDoc(doc(db, 'plants', plant.id), { notes: value });
     onPlantUpdate({ ...plant, notes: value });
+  }
+
+  async function unarchive() {
+    const patch = {
+      archived: false,
+      archivedAt: deleteField(),
+      archiveReason: deleteField(),
+      archiveNote: deleteField(),
+      archivedBy: deleteField(),
+    };
+    await updateDoc(doc(db, 'plants', plant.id), patch);
+    onPlantUpdate({ ...plant, archived: false, archivedAt: null, archiveReason: null, archiveNote: null, archivedBy: null });
   }
 
   async function handleDelete() {
@@ -117,6 +136,15 @@ export default function PlantDetailScreen({ plant, user, household, onBack, onPl
                 <button onClick={() => { setMenuOpen(false); setShowEdit(true); }} style={menuItem}>
                   ✏️ Edit plant
                 </button>
+                {plant.archived ? (
+                  <button onClick={() => { setMenuOpen(false); unarchive(); }} style={menuItem}>
+                    ↩️ Unarchive
+                  </button>
+                ) : (
+                  <button onClick={() => { setMenuOpen(false); setShowArchive(true); }} style={menuItem}>
+                    📦 Archive plant
+                  </button>
+                )}
                 <button onClick={() => { setMenuOpen(false); setShowDeleteConfirm(true); }} style={{ ...menuItem, color: '#ff6b6b' }}>
                   🗑️ Delete plant
                 </button>
@@ -130,6 +158,29 @@ export default function PlantDetailScreen({ plant, user, household, onBack, onPl
           {plant.location && <p style={{ color: '#a8c5a0', margin: 0, fontSize: '14px' }}>📍 {plant.location}</p>}
         </div>
       </div>
+
+      {plant.archived && (
+        <div style={{
+          background: '#2a2312', borderBottom: '1px solid #8a7030',
+          padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '10px',
+        }}>
+          <span style={{ fontSize: '18px' }}>📦</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: '#e0c070', fontSize: '13px', fontWeight: '700' }}>
+              Archived — {archiveReasonLabel(plant)}
+            </div>
+            {plant.archiveNote && (
+              <div style={{ color: '#a8c5a0', fontSize: '12px', marginTop: '2px' }}>{plant.archiveNote}</div>
+            )}
+          </div>
+          <button
+            onClick={unarchive}
+            style={{ background: 'transparent', border: '1px solid #8a7030', borderRadius: '8px', color: '#e0c070', fontSize: '12px', padding: '6px 10px', cursor: 'pointer', flexShrink: 0 }}
+          >
+            Unarchive
+          </button>
+        </div>
+      )}
 
       {/* Notes */}
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #1a2e1a' }}>
@@ -166,8 +217,16 @@ export default function PlantDetailScreen({ plant, user, household, onBack, onPl
         ))}
       </div>
 
-      {tab === 'watering' && <WateringTab plant={plant} user={user} household={household} onPlantUpdate={onPlantUpdate} />}
-      {tab === 'fertilizer' && <FertilizerTab plant={plant} user={user} household={household} onPlantUpdate={onPlantUpdate} />}
+      {tab === 'care' && <CareTab plant={plant} user={user} household={household} onPlantUpdate={onPlantUpdate} />}
+      {tab === 'family' && (
+        <FamilyTab
+          plant={plant}
+          user={user}
+          household={household}
+          onPlantUpdate={onPlantUpdate}
+          onSelectPlant={onSelectPlant}
+        />
+      )}
       {tab === 'health' && <HealthTab plant={plant} user={user} household={household} />}
 
       {/* Edit modal */}
@@ -176,6 +235,15 @@ export default function PlantDetailScreen({ plant, user, household, onBack, onPl
           plant={plant}
           onClose={() => setShowEdit(false)}
           onSave={onPlantUpdate}
+        />
+      )}
+
+      {showArchive && (
+        <ArchivePlantModal
+          plant={plant}
+          user={user}
+          onClose={() => setShowArchive(false)}
+          onArchived={onPlantUpdate}
         />
       )}
 

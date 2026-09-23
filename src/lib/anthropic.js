@@ -1,44 +1,28 @@
-export async function analyzePlantHealth(imageBase64, mimeType, userNote) {
-  const content = [
-    {
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: mimeType,
-        data: imageBase64,
-      },
-    },
-  ];
+import { httpsCallable } from 'firebase/functions';
+import { functions } from './firebase';
 
-  if (userNote?.trim()) {
-    content.push({ type: 'text', text: userNote.trim() });
+const callAnalyze = httpsCallable(functions, 'analyzePlantHealth', { timeout: 120000 });
+
+/**
+ * Asks Claude to diagnose a plant photo.
+ *
+ * The photo is uploaded to Storage first and passed here by path — the API key
+ * lives in Secret Manager and is only ever read by the Cloud Function, so it
+ * never reaches the browser bundle.
+ */
+export async function analyzePlantHealth(storagePath, userNote) {
+  let result;
+  try {
+    result = await callAnalyze({ storagePath, note: userNote ?? '' });
+  } catch (err) {
+    // Callable errors carry the function's message in err.message.
+    throw new Error(err?.message || 'Analysis failed. Try again.', { cause: err });
   }
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      system:
-        'You are a plant health expert. The user will share a photo of their plant and optionally describe what they\'re seeing. Respond in 2-3 short plain text sentences — no markdown, no bullet points, no headers. Give a quick diagnosis and one or two specific actions to take.',
-      messages: [{ role: 'user', content }],
-    }),
-  });
+  const raw = result?.data?.analysis;
+  if (!raw) throw new Error('Analysis came back empty. Try again.');
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || 'Claude API error');
-  }
-
-  const data = await response.json();
-  const raw = data.content[0].text;
-  // Strip markdown formatting so it renders as clean plain text
+  // Strip markdown so it renders as clean plain text
   return raw
     .replace(/#{1,6}\s+/g, '')           // ## headings
     .replace(/\*\*(.*?)\*\*/g, '$1')     // **bold**

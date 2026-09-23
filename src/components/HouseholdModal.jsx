@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { useBackGuard } from '../hooks/useBackGuard';
 
 export default function HouseholdModal({ household, onClose }) {
   const [name, setName] = useState(household.name ?? '');
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  useBackGuard(true, onClose);
 
   async function saveName() {
     const trimmed = name.trim();
