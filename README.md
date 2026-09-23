@@ -26,16 +26,16 @@ So the product is built around three ideas:
 
 ## Screenshots
 
-> ⚠️ These are from v1 and predate the merged Care tab, Families, and archiving. Needs retaking.
-
 <table>
   <tr>
-    <td align="center"><img src="screenshots/home.png" width="200"/><br/><sub>Home — plant grid</sub></td>
-    <td align="center"><img src="screenshots/watering.png" width="200"/><br/><sub>Care history</sub></td>
+    <td align="center"><img src="screenshots/home_23SEP.png" width="200"/><br/><sub><b>Home</b> — what needs doing, at a glance</sub></td>
+    <td align="center"><img src="screenshots/care_23SEP.png" width="200"/><br/><sub><b>Care</b> — water and fertilizer on one calendar</sub></td>
+    <td align="center"><img src="screenshots/quench_23SEP.png" width="200"/><br/><sub><b>Thirst Quencher</b> — a watering round, grouped by day</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/health.png" width="200"/><br/><sub>AI health check</sub></td>
-    <td align="center"><img src="screenshots/thirst-quencher.png" width="200"/><br/><sub>Thirst Quencher mode</sub></td>
+    <td align="center"><img src="screenshots/family_23SEP.png" width="200"/><br/><sub><b>Families</b> — propagation lineage and events</sub></td>
+    <td align="center"><img src="screenshots/health_23SEP.png" width="200"/><br/><sub><b>Health</b> — photo diagnosis via Claude</sub></td>
+    <td></td>
   </tr>
 </table>
 

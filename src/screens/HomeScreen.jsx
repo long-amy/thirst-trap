@@ -212,7 +212,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
                 outline: 'none', boxSizing: 'border-box', marginBottom: '10px',
               }}
             />
-            <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', alignItems: 'center' }}>
+            <div className="no-scrollbar" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', alignItems: 'center' }}>
               {!showArchived && (
                 <>
                   <span style={{ color: '#6a8f6a', fontSize: '12px', flexShrink: 0 }}>Sort:</span>
@@ -237,7 +237,7 @@ export default function HomeScreen({ user, household, onSelectPlant }) {
             </div>
 
             {locations.length > 1 && !showArchived && (
-              <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', marginTop: '6px' }}>
+              <div className="no-scrollbar" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', marginTop: '6px' }}>
                 <span style={{ color: '#6a8f6a', fontSize: '12px', flexShrink: 0, alignSelf: 'center' }}>📍</span>
                 <Chip active={!locationFilter} activeBg="#2d4a1e" activeColor="#a8e080" activeBorder="#4caf50" onClick={() => setLocationFilter(null)}>
                   All

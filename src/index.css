@@ -24,3 +24,14 @@ input, textarea, button {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* Horizontally scrollable chip rows: keep the scrolling, drop the visible bar.
+   The ::-webkit-scrollbar pseudo-element has no inline-style equivalent, which
+   is why this lives here rather than next to the component. */
+.no-scrollbar {
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* legacy Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;              /* Chrome, Safari */
+}
