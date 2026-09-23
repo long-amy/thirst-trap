@@ -2,7 +2,7 @@
 
 A mobile-first plant care web app for shared households. Track watering, fertilizing, propagation lineage, and plant health — in real time, across multiple people.
 
-**Live app:** https://thirst-trap-15acc.web.app
+**Live app:** running in production for a real household. [Get in touch](https://github.com/long-amy) if you'd like a link to try it — happy to share, I just like knowing who's using it.
 
 Claude Code is my engineering team. I own the product — the problem, the scope, the decisions, and finding the bugs.
 
@@ -203,3 +203,12 @@ firebase deploy
 - All plant and log data is scoped to a `householdId`; Firestore and Storage rules enforce that scope, covered by emulator tests in [`test/rules.test.mjs`](test/rules.test.mjs)
 - The Anthropic API key lives in Google Secret Manager and is read only by the Cloud Function — never by the browser
 - Households are capped at 2 members, enforced in the security rules rather than only in the UI
+
+---
+
+## License
+
+© 2026 Amy Long. All rights reserved.
+
+This code is published to be read, not reused. You're welcome to look through it,
+but it isn't licensed for copying, modification or redistribution.
