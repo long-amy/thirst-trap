@@ -1,7 +1,7 @@
 # Thirst Trap 🚿
 
-A plant care app for a household, not a person. Watering, fertilizing, health checks and
-propagation history for our house plants and vegetable garden, all in one place.
+An app so our household can track everything we want to know about our plants — watering,
+fertilizing, health and propagation — in one place.
 
 Built with Claude Code. The product decisions and testing are mine.
 
@@ -12,10 +12,8 @@ if you'd like a link — happy to share, I just like knowing who's using it.
 
 ## Why
 
-My husband tried every plant app on the market and hated all of them. They're built for one
-person tracking one plant, and they nag. Ours needed to handle two people looking after forty
-plants between a house and a garden, where the actual problem is not knowing whether the other
-person already watered something.
+My husband had tried a handful of different plant apps. Each one satisfied a different need,
+but he wanted something that had it all. That's where Claude and I came in.
 
 Now that I'm building it, he files feature requests.
 
